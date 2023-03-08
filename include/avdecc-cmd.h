@@ -165,6 +165,17 @@ void avdecc_cmd_process_incoming_raw( const void *request_,
                                                         struct raw_context *net,
                                                         const struct jdksavdecc_frame *frame ) );
 
+/*
+grrrr.org: same function only receiving a single message
+*/
+int avdecc_cmd_process_incoming_raw_once( const void *request_,
+                                      struct raw_context *net,
+                                      int max_time_in_ms,
+                                      int ( *process )( const void *request_,
+                                                        struct raw_context *net,
+                                                        const struct jdksavdecc_frame *frame ) );
+
+
 #ifdef __cplusplus
 }
 #endif

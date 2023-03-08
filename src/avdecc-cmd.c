@@ -76,7 +76,7 @@ void avdecc_cmd_print_frame_payload( FILE *f, const struct jdksavdecc_frame *fra
     }
 }
 
-void avdecc_cmd_process_incoming_raw( const void *request_,
+int avdecc_cmd_process_incoming_raw_once( const void *request_,
                                       struct raw_context *net,
                                       int max_time_in_ms,
                                       int ( *process )( const void *request_,
@@ -96,59 +96,69 @@ void avdecc_cmd_process_incoming_raw( const void *request_,
     timeout.tv_sec = max_time_in_ms / 1000;
     timeout.tv_usec = ( max_time_in_ms % 1000 ) * 1000;
 
+    struct timeval time_portion = timeout;
+
+    // refresh interest in readability of fd
+    FD_SET( net->m_fd, &rd_fds );
+
     do
     {
-        struct timeval time_portion = timeout;
+        // wait for it to become readable
+        r = select( nfds, &rd_fds, 0, 0, &time_portion );
+    } while ( r < 0 && errno == EINTR );
 
-        // refresh interest in readability of fd
-        FD_SET( net->m_fd, &rd_fds );
+    // any error aborts now
+    if ( r < 0 )
+    {
+        perror( "Error on select" );
+        goto end;
+    }
 
-        do
+    // If the socket is readable, process the message
+    if ( r > 0 )
+    {
+        if ( FD_ISSET( net->m_fd, &rd_fds ) )
         {
-            // wait for it to become readable
-            r = select( nfds, &rd_fds, 0, 0, &time_portion );
-        } while ( r < 0 && errno == EINTR );
+            ssize_t len;
+            struct jdksavdecc_frame frame;
+            bzero( &frame, sizeof( frame ) );
 
-        // any error aborts now
-        if ( r < 0 )
-        {
-            perror( "Error on select" );
-            break;
-        }
+            // Receive the ethernet frame
+            len = raw_recv(
+                net, frame.src_address.value, frame.dest_address.value, frame.payload, sizeof( frame.payload ) );
 
-        // If the socket is readable, process the message
-        if ( r > 0 )
-        {
-            if ( FD_ISSET( net->m_fd, &rd_fds ) )
+            // Did we get one?
+            if ( len > 0 )
             {
-                ssize_t len;
-                struct jdksavdecc_frame frame;
-                bzero( &frame, sizeof( frame ) );
-
-                // Receive the ethernet frame
-                len = raw_recv(
-                    net, frame.src_address.value, frame.dest_address.value, frame.payload, sizeof( frame.payload ) );
-
-                // Did we get one?
-                if ( len > 0 )
+                // Yes, fill in the length
+                frame.length = (uint16_t)len;
+                // And ethertype
+                frame.ethertype = net->m_ethertype;
+                // Process it.
+                if ( process( request_, net, &frame ) != 0 )
                 {
-                    // Yes, fill in the length
-                    frame.length = (uint16_t)len;
-                    // And ethertype
-                    frame.ethertype = net->m_ethertype;
-                    // Process it.
-                    if ( process( request_, net, &frame ) != 0 )
-                    {
-                        // Process function wants us to stop.
-                        break;
-                    }
-                }
-                else
-                {
-                    perror( "unable to read ethernet" );
-                    break;
+                    // Process function wants us to stop.
+                    goto end;
                 }
             }
+            else
+            {
+                perror( "unable to read ethernet" );
+                goto end;
+            }
         }
-    } while ( r > 0 );
+    }
+
+    end:
+    return r;
+}
+
+void avdecc_cmd_process_incoming_raw( const void *request_,
+                                      struct raw_context *net,
+                                      int max_time_in_ms,
+                                      int ( *process )( const void *request_,
+                                                        struct raw_context *net,
+                                                        const struct jdksavdecc_frame *frame ) )
+{
+    while(avdecc_cmd_process_incoming_raw_once(request_, net, max_time_in_ms, process) > 0) {}
 }
